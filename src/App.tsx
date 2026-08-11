@@ -832,7 +832,10 @@ export default function App() {
         simClock={simClock}
         currentUser={profile}
         onNavigatePage={(p) => setActivePage(p as PageKey)}
-        onMarkSurveyComplete={(id) => updateSurvey(id, { status: 'Completed' })}
+        onMarkSurveyComplete={(id) => {
+          const target = surveys.find((s) => s.id === id);
+          if (target) updateSurvey({ ...target, status: 'Completed' });
+        }}
       />
     ),
     'account-management': (
@@ -998,10 +1001,10 @@ export default function App() {
           responses={userAccessibleResponses}
           partnerCompanies={userAccessiblePartnerCompanies}
           userEmail={account || ''}
-          onBack={() => setActivePage('dashboard')}
+          onBack={() => setActivePage('survey-forms')}
           onDelete={(id) => {
             deleteSurvey(id);
-            setActivePage('dashboard');
+            setActivePage('survey-forms');
           }}
           onEdit={(id) => {
             setEditingSurveyId(id);

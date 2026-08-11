@@ -1,6 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { isMsalConfigured, loginWithMicrosoft } from '../services/msalAuth';
+import { redirectToMicrosoftLogin, checkBackendSession } from '../services/backendAuth';
+import { isDemoModeEnabled } from '../utils/demoMode';
+
+// Maps the backend's ?error= query values (see server.ts) to readable text.
+const SSO_ERROR_MESSAGES: Record<string, string> = {
+  ms_not_configured: 'Microsoft sign-in is not configured on the server yet.',
+  invalid_state: 'Your sign-in session expired. Please try again.',
+  unauthorized_domain: 'Access is restricted to verified @mgenesis.com accounts.',
+  token_exchange_failed: 'Microsoft sign-in failed. Please try again.',
+};
 
 // Passed up to App so it can establish the Supabase session (RLS) from the
 // Microsoft ID token. `auth` is optional only so non-Microsoft/dev callers
@@ -109,26 +118,60 @@ function HeroIllustration({ className }: { className?: string }) {
 }
 
 export function LoginPage({ onLogin }: LoginPageProps) {
-  const msalReady = isMsalConfigured();
+  const demoModeEnabled = isDemoModeEnabled();
   const [isMsSigningIn, setIsMsSigningIn] = useState(false);
   const [msError, setMsError] = useState('');
+  const [demoEmail, setDemoEmail] = useState('');
+  const [demoError, setDemoError] = useState('');
+  const [showDemoFallback, setShowDemoFallback] = useState(false);
 
-  async function handleMicrosoftSignIn() {
+  // Runs once on mount to pick up where the backend's Microsoft redirect
+  // (server.ts /auth/microsoft/callback) left off: either ?sso=success,
+  // meaning a session cookie now exists and we just need to read who it is,
+  // or ?error=... from a failed attempt.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ssoSuccess = params.get('sso') === 'success';
+    const errorCode = params.get('error');
+
+    if (errorCode) {
+      setMsError(SSO_ERROR_MESSAGES[errorCode] || 'Microsoft sign-in failed. Please try again.');
+      window.history.replaceState({}, '', window.location.pathname);
+      return;
+    }
+
+    if (ssoSuccess) {
+      setIsMsSigningIn(true);
+      checkBackendSession().then((user) => {
+        setIsMsSigningIn(false);
+        window.history.replaceState({}, '', window.location.pathname);
+        if (user) {
+          onLogin(user.email);
+        } else {
+          setMsError('Sign-in succeeded but no session was found. Please try again.');
+        }
+      });
+    }
+  }, [onLogin]);
+
+  function handleDemoLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setDemoError('');
+    const normalized = demoEmail.trim().toLowerCase();
+    if (!normalized.endsWith('@mgenesis.com')) {
+      setDemoError('Access is restricted to verified @mgenesis.com accounts.');
+      return;
+    }
+    onLogin(normalized);
+  }
+
+  function handleMicrosoftSignIn() {
     setMsError('');
     setIsMsSigningIn(true);
-    try {
-      const result = await loginWithMicrosoft();
-      const normalized = result.email.trim().toLowerCase();
-      if (!normalized.endsWith('@mgenesis.com')) {
-        setMsError('Access is restricted to verified @mgenesis.com accounts.');
-        return;
-      }
-      onLogin(normalized, { idToken: result.idToken, nonce: result.nonce });
-    } catch (err) {
-      setMsError(err instanceof Error ? err.message : 'Microsoft sign-in failed. Please try again.');
-    } finally {
-      setIsMsSigningIn(false);
-    }
+    // Full-page redirect to the backend, which redirects to Microsoft. See
+    // server.ts for the rest of the flow - this page picks back up in the
+    // useEffect above once Microsoft sends the browser back here.
+    redirectToMicrosoftLogin();
   }
 
   return (
@@ -220,26 +263,58 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               </p>
             )}
 
-            {msalReady ? (
-              <button
-                type="button"
-                onClick={handleMicrosoftSignIn}
-                disabled={isMsSigningIn}
-                className="flex w-full cursor-pointer items-center justify-center gap-2.5 rounded-lg border border-slate-300 bg-white py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-70"
-              >
-                <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
-                  <rect x="1" y="1" width="9" height="9" fill="#f25022" />
-                  <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
-                  <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
-                  <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
-                </svg>
-                {isMsSigningIn ? 'Signing in…' : 'Sign in with Microsoft'}
-              </button>
-            ) : (
-              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-700">
-                Microsoft sign-in is not configured yet. Set <span className="font-semibold">VITE_AZURE_CLIENT_ID</span>{' '}
-                and <span className="font-semibold">VITE_AZURE_TENANT_ID</span> in the deployment environment.
-              </p>
+            <button
+              type="button"
+              onClick={handleMicrosoftSignIn}
+              disabled={isMsSigningIn}
+              className="flex w-full cursor-pointer items-center justify-center gap-2.5 rounded-lg border border-slate-300 bg-white py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-70"
+            >
+              <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
+                <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+                <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+                <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+                <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+              </svg>
+              {isMsSigningIn ? 'Signing in…' : 'Sign in with Microsoft'}
+            </button>
+
+            {demoModeEnabled && (
+              <div className="mt-4">
+                {!showDemoFallback ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowDemoFallback(true)}
+                    className="w-full cursor-pointer text-center text-[11px] font-medium text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline"
+                  >
+                    Azure not set up yet? Use local demo login
+                  </button>
+                ) : (
+                  <form onSubmit={handleDemoLogin} className="mt-3 space-y-3">
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-700">
+                      Demo login bypasses Microsoft SSO — for local development only.
+                    </p>
+                    {demoError && (
+                      <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                        {demoError}
+                      </p>
+                    )}
+                    <input
+                      type="email"
+                      required
+                      placeholder="you@mgenesis.com"
+                      value={demoEmail}
+                      onChange={(e) => setDemoEmail(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-[#0063a9]"
+                    />
+                    <button
+                      type="submit"
+                      className="w-full cursor-pointer rounded-lg bg-[#0063a9] py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#00528c]"
+                    >
+                      Continue with demo login
+                    </button>
+                  </form>
+                )}
+              </div>
             )}
 
             <p className="mt-8 text-center text-[11px] leading-relaxed text-slate-400">
