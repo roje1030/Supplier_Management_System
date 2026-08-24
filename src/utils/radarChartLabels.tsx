@@ -1,12 +1,7 @@
 import type { CSSProperties } from 'react';
+import type { Props as RechartsLabelProps } from 'recharts/types/component/Label';
 
 const RADIAN = Math.PI / 180;
-
-interface RadarPointLabelProps {
-  viewBox?: { x?: number; y?: number };
-  value?: number | string;
-  index?: number;
-}
 
 interface RadarLabelOptions {
   /** Number of vertices around the radar (categories). Recharts spaces them
@@ -47,9 +42,19 @@ export function radarPointLabel({
   radialInset = 14,
   lane = 0,
 }: RadarLabelOptions) {
-  return function RadarPointLabel({ viewBox, value, index }: RadarPointLabelProps) {
-    const x = viewBox?.x;
-    const y = viewBox?.y;
+  return function RadarPointLabel({ viewBox, value, index }: RechartsLabelProps) {
+    const x =
+      viewBox && 'x' in viewBox && typeof viewBox.x === 'number'
+        ? viewBox.x
+        : viewBox && 'cx' in viewBox && typeof viewBox.cx === 'number'
+          ? viewBox.cx
+          : undefined;
+    const y =
+      viewBox && 'y' in viewBox && typeof viewBox.y === 'number'
+        ? viewBox.y
+        : viewBox && 'cy' in viewBox && typeof viewBox.cy === 'number'
+          ? viewBox.cy
+          : undefined;
     const numeric = typeof value === 'number' ? value : parseFloat(String(value));
     if (x == null || y == null || index == null || Number.isNaN(numeric) || categoryCount <= 0) {
       return null;
