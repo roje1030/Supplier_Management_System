@@ -4,7 +4,6 @@ import { QuestionDefinition, ResponseNotification, SurveyResponse, SurveyType, C
 import { surveyQuestions } from '../data/questions';
 import { generateMockResponses, generateAllMockResponses, generateSingleMockResponse, generateBulkMockResponses } from '../data/mockResponses';
 import { importMasterListFromFile, ImportResult } from '../utils/masterListImport';
-import { seedPartnerCompanies } from '../data/partnerCompaniesSeed';
 import { importArchivedResponsesFromFile, ArchiveImportResult } from '../utils/archiveResponseTransfer';
 import {
   previewRawEvaluationImport as previewRawEvaluationImportFile,
@@ -18,17 +17,10 @@ import { logAdminActivity } from '../utils/adminActivityLog';
 import { computeCompanyDocumentSummary, computeDocumentStatus, EXPIRING_SOON_DAYS } from '../utils/compliance';
 import { getRequiredDocumentKeys } from '../utils/documentRequirements';
 import { getNotificationSettings, NOTIFICATION_SETTINGS_CHANGED_EVENT } from '../utils/documentNotificationSettings';
-import { insertSurveyResponses } from '../services/supabaseResponses';
+import { insertSurveyResponses, fetchSurveyResponses } from '../services/supabaseResponses';
+import { deletePartnerCompany as deletePartnerCompanyFromSupabase, fetchPartnerCompanies, replacePartnerCompanies, syncPartnerCompanies } from '../services/supabasePartnerCompanies';
+import { isSupabaseConfigured } from '../services/supabaseClient';
 import { CATEGORIES_STORAGE_KEY, DEFAULT_CATEGORIES, LEGACY_OVERALL_CATEGORY, OVERALL_CATEGORY, getStoredCategoryLabels } from '../data/questionCategories';
-
-// Bumped from _v7: the Master List's format changed (columns shifted, one
-// more legend row added, Status dropdown expanded to 6 values) and
-// partnerCompaniesSeed.ts was regenerated from the updated file (~1129
-// companies) to match. Any browser without existing _v8 data starts from
-// that refreshed snapshot; once loaded, admin edits (add/update/archive/
-// import) persist under _v8 exactly like before - this only changes what
-// day-one state looks like.
-const PARTNER_COMPANIES_STORAGE_KEY = 'survey_analytics_partner_companies_v8';
 
 const NOTIFICATION_HISTORY_LIMIT = 200;
 const INITIAL_NOTIFICATION_SEED = 15;
@@ -74,7 +66,7 @@ function ensureOverallFeedbackQuestion(form: CustomForm): CustomForm {
   return {
     ...form,
     questions: [...form.questions, feedbackQuestion]
-  };
+  }
 }
 
 // One-time self-healing migration: questions saved before the "Overall"
@@ -123,18 +115,22 @@ function normalizePartnerCompany(company: PartnerCompany): PartnerCompany {
       : [{ id: `${company.id}-branch-1`, bpCode: '' }];
 
   return {
-    registeredAt: defaultRegisteredAt,
-    isArchived: false,
-    // Existing/seeded companies are already-registered partners, so default
-    // them to Accredited; a real import can override this per row.
-    accreditationStatus: 'Accredited',
+    ...company,
+    type: normalizedType,
+    registeredAt: company.registeredAt ?? defaultRegisteredAt,
+    isArchived: company.isArchived ?? false,
+    accreditationStatus: company.accreditationStatus ?? (normalizedType === 'Uncategorized' ? 'Unaccredited' : 'Accredited'),
     // Only Suppliers carry a Local/Foreign origin. Legacy seeded suppliers
     // predate this distinction, so default them to Local (all known to be
     // local vendors) unless already set.
-    supplierOrigin: normalizedType === 'Supplier' ? 'Local' : undefined,
-    ...company,
-    type: normalizedType,
-    branches: defaultBranches,
+    supplierOrigin: normalizedType === 'Supplier' ? (company.supplierOrigin ?? 'Local') : undefined,
+    branches:
+      company.branches && company.branches.length > 0
+        ? company.branches.map((branch) => ({
+            ...branch,
+            documents: { ...(branch.documents ?? {}) },
+          }))
+        : defaultBranches,
   };
 }
 
@@ -399,7 +395,8 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
   useEffect(() => {
     isMountedRef.current = true;
 
-    function initData() {
+    async function initData() {
+      let loadErrorMessage: string | null = null;
       try {
         setIsLoading(true);
 
@@ -1205,44 +1202,50 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
 
         // 2. Handle Partner Companies
         let loadedCompanies: PartnerCompany[] = [];
-        const savedCompanies = localStorage.getItem(PARTNER_COMPANIES_STORAGE_KEY);
-        if (savedCompanies) {
-          loadedCompanies = JSON.parse(savedCompanies).map(normalizePartnerCompany);
-          localStorage.setItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(loadedCompanies));
-        } else {
-          // Baseline registry for any browser with no partner-company data yet:
-          // the full Master List snapshot (see partnerCompaniesSeed.ts) rather
-          // than a small hand-typed demo list.
-          loadedCompanies = seedPartnerCompanies.map(normalizePartnerCompany);
-          localStorage.setItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(loadedCompanies));
-        }
-
-        // 3. Handle Responses
-        if (localStorage.getItem('survey_analytics_v6_cleared_by_agent_final') !== 'true') {
-          localStorage.removeItem('survey_analytics_responses');
-          localStorage.removeItem('survey_analytics_responses_v4');
-          localStorage.removeItem('survey_analytics_responses_v5');
-          localStorage.removeItem('survey_analytics_responses_v6');
-          localStorage.removeItem('survey_analytics_full_dataset_active');
-          localStorage.setItem('survey_analytics_v6_cleared_by_agent_final', 'true');
-        }
-
-        let loadedResponses: SurveyResponse[] = [];
-        const savedResponses = localStorage.getItem('survey_analytics_responses_v6');
-        let parsedResponses: any[] = [];
         try {
-          parsedResponses = savedResponses ? JSON.parse(savedResponses) : [];
-        } catch (e) {}
+          if (!isSupabaseConfigured) {
+            throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY.');
+          }
+          loadedCompanies = (await fetchPartnerCompanies()).map(normalizePartnerCompany);
+        } catch (companyLoadError) {
+          loadErrorMessage = companyLoadError instanceof Error ? companyLoadError.message : 'Unable to load partner companies from Supabase.';
+          loadedCompanies = [];
+        }
 
-        if (savedResponses && parsedResponses.length > 0) {
-          loadedResponses = decompressResponses(parsedResponses).map(normalizeSurveyResponse);
+        // 3. Handle Responses from Supabase
+        let loadedResponses: SurveyResponse[] = [];
+        try {
+          if (!isSupabaseConfigured) {
+            throw new Error('Supabase is not configured.');
+          }
+          const supabaseResponses = await fetchSurveyResponses();
+          loadedResponses = supabaseResponses.map(normalizeSurveyResponse);
           safeSetItem('survey_analytics_responses_v6', JSON.stringify(compressResponses(loadedResponses)));
-        } else {
-          // Start with zero submissions instead of auto-seeding a mock dataset.
-          // Admins can still populate synthetic data on demand via the
-          // Database Simulator's "Add Evaluation" tool (addEvaluations below).
-          loadedResponses = [];
-          safeSetItem('survey_analytics_responses_v6', JSON.stringify([]));
+        } catch (responseLoadError) {
+          console.warn('Failed to load responses from Supabase:', responseLoadError instanceof Error ? responseLoadError.message : String(responseLoadError));
+          // Fall back to localStorage if Supabase fails
+          if (localStorage.getItem('survey_analytics_v6_cleared_by_agent_final') !== 'true') {
+            localStorage.removeItem('survey_analytics_responses');
+            localStorage.removeItem('survey_analytics_responses_v4');
+            localStorage.removeItem('survey_analytics_responses_v5');
+            localStorage.removeItem('survey_analytics_responses_v6');
+            localStorage.removeItem('survey_analytics_full_dataset_active');
+            localStorage.setItem('survey_analytics_v6_cleared_by_agent_final', 'true');
+          }
+
+          const savedResponses = localStorage.getItem('survey_analytics_responses_v6');
+          let parsedResponses: any[] = [];
+          try {
+            parsedResponses = savedResponses ? JSON.parse(savedResponses) : [];
+          } catch (e) {}
+
+          if (savedResponses && parsedResponses.length > 0) {
+            loadedResponses = decompressResponses(parsedResponses).map(normalizeSurveyResponse);
+            safeSetItem('survey_analytics_responses_v6', JSON.stringify(compressResponses(loadedResponses)));
+          } else {
+            loadedResponses = [];
+            safeSetItem('survey_analytics_responses_v6', JSON.stringify([]));
+          }
         }
 
         if (isMountedRef.current) {
@@ -1252,6 +1255,9 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
 
           const groupedNotifs = groupResponsesToNotifications(loadedResponses);
           setNotifications(groupedNotifs.slice(0, INITIAL_NOTIFICATION_SEED));
+        }
+        if (loadErrorMessage && isMountedRef.current) {
+          setError(loadErrorMessage);
         }
       } catch (loadError) {
         if (isMountedRef.current) {
@@ -1264,7 +1270,7 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
       }
     }
 
-    initData();
+    void initData();
 
     return () => {
       isMountedRef.current = false;
@@ -1461,7 +1467,9 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
     });
     const updated = [...partnerCompanies, newCompany];
     setPartnerCompanies(updated);
-    safeSetItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(updated));
+    void syncPartnerCompanies([newCompany]).catch((error) => {
+      console.error('Supabase: failed to save partner company', error);
+    });
     return newCompany;
   };
 
@@ -1470,7 +1478,9 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
     const normalizedCompany = normalizePartnerCompany(updatedCompany);
     setPartnerCompanies((currentCompanies) => {
       const updated = currentCompanies.map((c) => c.id === normalizedCompany.id ? normalizedCompany : c);
-      safeSetItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(updated));
+      void syncPartnerCompanies([normalizedCompany]).catch((error) => {
+        console.error('Supabase: failed to update partner company', error);
+      });
       return updated;
     });
     return normalizedCompany;
@@ -1484,7 +1494,9 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
     const map = new Map(updatedCompaniesList.map((c) => [c.id, normalizePartnerCompany(c)]));
     setPartnerCompanies((currentCompanies) => {
       const updated = currentCompanies.map((c) => map.has(c.id) ? map.get(c.id)! : c);
-      safeSetItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(updated));
+      void syncPartnerCompanies([...map.values()]).catch((error) => {
+        console.error('Supabase: failed to update partner companies', error);
+      });
       return updated;
     });
   };
@@ -1508,14 +1520,18 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
   const commitMasterListImport = (result: ImportResult) => {
     const normalized = result.companies.map(normalizePartnerCompany);
     setPartnerCompanies(normalized);
-    safeSetItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(normalized));
+    void replacePartnerCompanies(normalized).catch((error) => {
+      console.error('Supabase: failed to replace partner companies', error);
+    });
   };
 
   // Remove a partner company
   const removePartnerCompany = (id: string) => {
     const updated = partnerCompanies.filter((c) => c.id !== id);
     setPartnerCompanies(updated);
-    safeSetItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(updated));
+    void deletePartnerCompanyFromSupabase(id).catch((error) => {
+      console.error('Supabase: failed to delete partner company', error);
+    });
   };
 
   // Reset to initial mock data state
@@ -1532,7 +1548,6 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
     localStorage.removeItem('survey_analytics_partner_companies_v5');
     localStorage.removeItem('survey_analytics_partner_companies_v6');
     localStorage.removeItem('survey_analytics_partner_companies_v7');
-    localStorage.removeItem(PARTNER_COMPANIES_STORAGE_KEY);
     localStorage.removeItem('survey_analytics_full_dataset_active');
     localStorage.removeItem(CATEGORIES_STORAGE_KEY);
     window.location.reload();
@@ -1779,7 +1794,9 @@ export function useSurveyData(accounts: SimulatableAccount[] = [], currentUserEm
       const normalizedNew = newPartnerCompanies.map(normalizePartnerCompany);
       setPartnerCompanies((prevCompanies) => {
         const updatedCompanies = [...prevCompanies, ...normalizedNew];
-        safeSetItem(PARTNER_COMPANIES_STORAGE_KEY, JSON.stringify(updatedCompanies));
+        void syncPartnerCompanies(normalizedNew).catch((error) => {
+          console.error('Supabase: failed to add imported partner companies', error);
+        });
         return updatedCompanies;
       });
     }

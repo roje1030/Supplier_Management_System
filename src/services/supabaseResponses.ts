@@ -44,3 +44,47 @@ export async function insertSurveyResponses(responses: SurveyResponse[]): Promis
     console.error('Supabase: failed to save survey response(s)', error);
   }
 }
+
+// Fetch all survey responses from Supabase
+export async function fetchSurveyResponses(): Promise<SurveyResponse[]> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Supabase is not configured.');
+  }
+
+  const { data, error } = await supabase
+    .from('survey_responses')
+    .select('*')
+    .order('submission_date', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to fetch survey responses: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    return [];
+  }
+
+  // Map Supabase columns back to SurveyResponse type
+  return data.map((row: any): SurveyResponse => ({
+    responseId: row.response_id,
+    surveyType: row.survey_type,
+    respondentType: row.respondent_type,
+    startTime: row.start_time ?? undefined,
+    submissionDate: row.submission_date,
+    company: row.company,
+    department: row.department ?? undefined,
+    address: row.address ?? undefined,
+    questionId: row.question_id,
+    questionNumber: row.question_number,
+    question: row.question,
+    questionCategory: row.question_category,
+    rating: row.rating_is_na ? 'N/A' : (row.rating_value as Rating),
+    comment: row.comment ?? undefined,
+    respondentEmail: row.respondent_email ?? undefined,
+    archived: row.archived ?? false,
+    archivedAt: row.archived_at ?? undefined,
+    archivedBySurveyId: row.archived_by_survey_id ?? undefined,
+    archivedBySurveyTitle: row.archived_by_survey_title ?? undefined,
+    seriesId: row.series_id ?? undefined,
+  }));
+}

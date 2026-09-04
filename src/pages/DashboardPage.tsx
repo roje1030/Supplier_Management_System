@@ -70,7 +70,7 @@ interface DashboardPageProps {
   isLoading: boolean;
   error: string | null;
   surveyTypeFilter: SurveyType[];
-  surveys?: any[];
+  surveys?: Survey[];
   isAdmin?: boolean;
   userEmail?: string;
 }

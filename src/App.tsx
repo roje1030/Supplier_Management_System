@@ -32,6 +32,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { OutstandingEvaluationsPage } from './pages/OutstandingEvaluationsPage';
 import { ExportHistoryPage } from './pages/ExportHistoryPage';
 import { CategoriesManagerPage } from './pages/CategoriesManagerPage';
+import { StateMessage } from './components/StateMessage';
 import { logAdminActivity } from './utils/adminActivityLog';
 import { useSurveyData } from './hooks/useSurveyData';
 import { applyFilters, initialFilters } from './utils/analytics';
@@ -749,6 +750,32 @@ export default function App() {
   // Auth Guard
   if (!account) {
     return <LoginPage onLogin={handleLogin} />;
+  }
+
+  if (isLoading) {
+    return (
+      <div className={darkMode ? 'dark' : ''}>
+        <div className="min-h-screen bg-slate-50 px-4 py-16 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+          <StateMessage
+            title="Loading company data"
+            message="Connecting to Supabase and loading partner companies, surveys, and responses."
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={darkMode ? 'dark' : ''}>
+        <div className="min-h-screen bg-slate-50 px-4 py-16 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+          <StateMessage
+            title="Unable to load Supabase data"
+            message={error}
+          />
+        </div>
+      </div>
+    );
   }
 
   // Handler for custom survey submission
