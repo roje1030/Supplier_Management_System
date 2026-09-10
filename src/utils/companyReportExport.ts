@@ -47,7 +47,7 @@ export interface CompanyReportChartImages {
 export interface CompanyReportData {
   company: string;
   surveyType: SurveyType;
-  composite: CompanyComposite;
+  composite: CompanyComposite | null;
   generatedOn: string;
   graphs?: CompanyReportGraphSelection;
   includeComments: boolean;
@@ -112,6 +112,19 @@ export async function exportCompanyReportAsPDF(
   previewOnly?: boolean,
   asDataUri?: boolean
 ): Promise<string | undefined> {
+  const composite = data.composite ?? {
+    company: data.company,
+    surveyType: data.surveyType,
+    compositeScore: 0,
+    band: { label: 'No Score Yet', min: -1, hex: '#94a3b8' },
+    sections: [],
+    ratedQuestionCount: 0,
+    evaluationCount: 0,
+    hasScore: false,
+    stdDev: 0,
+    naRate: 0,
+    rankScore: 0,
+  };
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   const marginLeft = 48;
   const pageWidth = doc.internal.pageSize.width;
@@ -152,7 +165,7 @@ export async function exportCompanyReportAsPDF(
   doc.setTextColor(140);
   doc.text('Prepared for internal review by the', pageWidth / 2, pageHeight - 96, { align: 'center' });
   doc.setFont('helvetica', 'bold');
-  doc.text('Microgenesis Supplier Management System', pageWidth / 2, pageHeight - 82, { align: 'center' });
+  doc.text('Procurement Group', pageWidth / 2, pageHeight - 82, { align: 'center' });
   doc.setFont('helvetica', 'normal');
   doc.text('This document is confidential and intended solely for the named recipient.', pageWidth / 2, pageHeight - 62, {
     align: 'center',
@@ -209,10 +222,10 @@ export async function exportCompanyReportAsPDF(
   doc.setFontSize(13.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...BRAND);
-  doc.text(formatCompositeScore(data.surveyType, data.composite.compositeScore).text, marginLeft + 12, cursorY + 35);
+  doc.text(formatCompositeScore(data.surveyType, composite.compositeScore).text, marginLeft + 12, cursorY + 35);
   doc.setTextColor(20, 20, 20);
-  doc.text(data.composite.band.label, marginLeft + 190, cursorY + 35);
-  doc.text(String(data.composite.evaluationCount), marginLeft + 340, cursorY + 35);
+  doc.text(composite.band.label, marginLeft + 190, cursorY + 35);
+  doc.text(String(composite.evaluationCount), marginLeft + 340, cursorY + 35);
   doc.setFont('helvetica', 'normal');
   cursorY += 72;
 
@@ -284,7 +297,7 @@ export async function exportCompanyReportAsPDF(
         margin: { left: marginLeft, right: marginLeft, top: HEADER_BOTTOM + 16 },
         styles: { fontSize: 9, cellPadding: 6, fontStyle: 'italic' },
         columnStyles: {
-          0: { fontStyle: 'normal', width: 25, halign: 'center' as const },
+          0: { fontStyle: 'normal', halign: 'center' as const },
           1: { fontStyle: 'italic' }
         },
         headStyles: { fillColor: BRAND as unknown as [number, number, number], textColor: 255, fontStyle: 'bold', fontSize: 9 },
@@ -364,6 +377,19 @@ async function imageParagraph(dataUrl: string | null | undefined, title: string,
 }
 
 export async function exportCompanyReportAsDocx(data: CompanyReportData) {
+  const composite = data.composite ?? {
+    company: data.company,
+    surveyType: data.surveyType,
+    compositeScore: 0,
+    band: { label: 'No Score Yet', min: -1, hex: '#94a3b8' },
+    sections: [],
+    ratedQuestionCount: 0,
+    evaluationCount: 0,
+    hasScore: false,
+    stdDev: 0,
+    naRate: 0,
+    rankScore: 0,
+  };
   const logoDataUrl = await fetchLogoDataUrl();
   const logoBytes = logoDataUrl ? dataUrlToUint8Array(logoDataUrl) : null;
 
@@ -415,7 +441,7 @@ export async function exportCompanyReportAsDocx(data: CompanyReportData) {
     new Paragraph({
       alignment: AlignmentType.CENTER,
       spacing: { after: 40 },
-      children: [new TextRun({ text: 'Microgenesis Supplier Management System', bold: true, size: 17, color: INK_HEX })],
+      children: [new TextRun({ text: 'Procurement Group', bold: true, size: 17, color: INK_HEX })],
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
@@ -456,7 +482,7 @@ export async function exportCompanyReportAsDocx(data: CompanyReportData) {
                 children: [new TextRun({ text: 'COMPOSITE SCORE', bold: true, size: 18, color: MUTED_HEX })],
               }),
               new Paragraph({
-                children: [new TextRun({ text: formatCompositeScore(data.surveyType, data.composite.compositeScore).text, bold: true, size: 56, color: BRAND_HEX })],
+                children: [new TextRun({ text: formatCompositeScore(data.surveyType, composite.compositeScore).text, bold: true, size: 56, color: BRAND_HEX })],
               }),
             ],
           }),
@@ -470,7 +496,7 @@ export async function exportCompanyReportAsDocx(data: CompanyReportData) {
                 children: [new TextRun({ text: 'RATING BAND', bold: true, size: 18, color: MUTED_HEX })],
               }),
               new Paragraph({
-                children: [new TextRun({ text: data.composite.band.label, bold: true, size: 36, color: INK_HEX })],
+                children: [new TextRun({ text: composite.band.label, bold: true, size: 36, color: INK_HEX })],
               }),
             ],
           }),
@@ -484,7 +510,7 @@ export async function exportCompanyReportAsDocx(data: CompanyReportData) {
                 children: [new TextRun({ text: 'EVALUATIONS', bold: true, size: 18, color: MUTED_HEX })],
               }),
               new Paragraph({
-                children: [new TextRun({ text: String(data.composite.evaluationCount), bold: true, size: 36, color: INK_HEX })],
+                children: [new TextRun({ text: String(composite.evaluationCount), bold: true, size: 36, color: INK_HEX })],
               }),
             ],
           }),
